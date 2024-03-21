@@ -5,9 +5,9 @@ import (
 	"github.com/devkingsaul/mexc-banano-refunds/util"
 	"bytes"
 	"encoding/json"
-	"net/http"
-	"fmt"
 	"errors"
+	"fmt"
+	"net/http"
 	"slices"
 )
 
@@ -18,18 +18,19 @@ type BlockHistoryResponse struct {
 
 type HistoryResponse struct {
 	History []BlockHistoryResponse `json:"history"`
-	Error string `json:"error"`
+	Error   string                 `json:"error"`
 }
 
 type HistoryRequest struct {
 	Action  string `json:"action"`
 	Account string `json:"account"`
 	Count   string `json:"count"`
-	Raw		bool   `json:"raw"`
+	Raw     bool   `json:"raw"`
 }
 
 type APIController struct {
-	Url string `json:"rpc_url"`
+	Url        string `json:"rpc_url"`
+	httpClient http.Client
 }
 
 func (controller APIController) FetchAccountFrontier(account [32]byte) (block util.StateBlock, err error) {
@@ -40,10 +41,10 @@ func (controller APIController) FetchAccountFrontier(account [32]byte) (block ut
 	}
 
 	req := HistoryRequest{
-		Action: "account_history",
+		Action:  "account_history",
 		Account: encodedAddress,
-		Count: "1",
-		Raw: true,
+		Count:   "1",
+		Raw:     true,
 	}
 
 	rawReq, err := json.Marshal(req)
@@ -52,7 +53,7 @@ func (controller APIController) FetchAccountFrontier(account [32]byte) (block ut
 		return
 	}
 
-	resp, err := http.Post(controller.Url, "application/json", bytes.NewBuffer(rawReq))
+	resp, err := controller.httpClient.Post(controller.Url, "application/json", bytes.NewBuffer(rawReq))
 
 	if err != nil {
 		return
@@ -63,9 +64,9 @@ func (controller APIController) FetchAccountFrontier(account [32]byte) (block ut
 		return
 	}
 
-	var respBody HistoryResponse;
+	var respBody HistoryResponse
 
-	err = json.NewDecoder(resp.Body).Decode(&respBody);
+	err = json.NewDecoder(resp.Body).Decode(&respBody)
 	resp.Body.Close()
 
 	if err != nil {

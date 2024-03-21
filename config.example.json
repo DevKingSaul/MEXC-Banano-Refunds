@@ -1,6 +1,7 @@
 {
     "private_key": "",
-    "refund_amount": 0.01,
+    "refund_amount": "1000000000000000000000000000",
     "ws_url": "wss://ws.banano.trade",
-    "rpc_url": "https://api.banano.trade/proxy"
+    "rpc_url": "https://kaliumapi.appditto.com/api",
+    "withdrawal_account": "ban_14cng4wpbmu5qpmuonsna6zbycwisr7ui73afkgya1gqmiuywhmmes443a3d"
 }
