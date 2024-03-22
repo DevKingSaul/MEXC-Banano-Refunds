@@ -1,15 +1,15 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
+	"github.com/devkingsaul/mexc-banano-refunds/block_proccessor"
 	"github.com/devkingsaul/mexc-banano-refunds/ed25519"
 	"github.com/devkingsaul/mexc-banano-refunds/json_marshal"
 	"github.com/devkingsaul/mexc-banano-refunds/rpc"
 	"github.com/devkingsaul/mexc-banano-refunds/uint128"
 	"github.com/devkingsaul/mexc-banano-refunds/util"
-	"github.com/devkingsaul/mexc-banano-refunds/block_proccessor"
 	"github.com/devkingsaul/mexc-banano-refunds/websocket_controller"
-	"encoding/json"
-	"fmt"
 	"os"
 )
 
@@ -22,6 +22,7 @@ type Config struct {
 }
 
 var apiController rpc.APIController
+var wsController websocket_controller.WebSocketController
 
 func main() {
 	json_raw, err := os.ReadFile("./config.json")
@@ -54,7 +55,16 @@ func main() {
 
 	copy(publicKey[:], privateKey[32:])
 
+	messages := make(chan block_proccessor.QueueEntry, 5)
+
 	apiController = rpc.APIController{Url: config.RPC}
+	wsController = websocket_controller.WebSocketController{
+		Proccessor:        messages,
+		Url:               config.WebSocket,
+		Sender:            publicKey,
+		WithdrawalAccount: config.WithdrawalAccount,
+		RefundAmount:      config.RefundAmount,
+	}
 
 	frontier, err := apiController.FetchAccountFrontier(publicKey)
 
@@ -63,9 +73,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	messages := make(chan block_proccessor.QueueEntry)
+	go block_proccessor.Run(messages, frontier, apiController, privateKey)
 
-	go block_proccessor.Run(messages, frontier, apiController)
-
-	websocket_controller.Start(messages, config.WebSocket)
+	wsController.Start()
 }

@@ -1,15 +1,15 @@
 package websocket_controller
 
 import (
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"github.com/devkingsaul/mexc-banano-refunds/block_proccessor"
 	"github.com/devkingsaul/mexc-banano-refunds/json_marshal"
 	"github.com/devkingsaul/mexc-banano-refunds/uint128"
 	"github.com/devkingsaul/mexc-banano-refunds/util"
 	"github.com/gorilla/websocket"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"slices"
 	"time"
 )
@@ -32,13 +32,27 @@ type WebSocketMessage struct {
 	Message json.RawMessage `json:"message,omitempty"`
 }
 
-type WebSocketSubscribtion struct {
-	Action string `json:"action"`
-	Topic  string `json:"topic"`
-	Ack    bool   `json:"ack"`
+type SubscriptionOptions struct {
+	Accounts []util.Address `json:"accounts"`
 }
 
-func ProcessMessage(rawMessage []byte) error {
+type WebSocketSubscription struct {
+	Action  string              `json:"action"`
+	Topic   string              `json:"topic"`
+	Ack     bool                `json:"ack"`
+	Options SubscriptionOptions `json:"options"`
+}
+
+type WebSocketController struct {
+	Proccessor        chan<- block_proccessor.QueueEntry
+	Url               string
+	Sender            util.Address
+	WithdrawalAccount util.Address
+	RefundAmount      uint128.Uint128
+	ProccessedHashes  map[[32]byte]bool
+}
+
+func (controller WebSocketController) ProcessMessage(rawMessage []byte) error {
 	var message WebSocketMessage
 
 	err := json.Unmarshal(rawMessage, &message)
@@ -49,7 +63,7 @@ func ProcessMessage(rawMessage []byte) error {
 	}
 
 	if message.Ack != "" {
-		fmt.Printf("Subscribtion Acknowledgement: %s\n", message.Ack)
+		fmt.Printf("Subscription Acknowledgement: %s\n", message.Ack)
 	} else if message.Topic == "confirmation" {
 		var topicMsg ConfirmationTopic
 
@@ -67,30 +81,50 @@ func ProcessMessage(rawMessage []byte) error {
 			return errors.New("invalid hash")
 		}
 
-		b, err := json.MarshalIndent(topicMsg, "", "  ")
-
-		if err != nil {
-			fmt.Println(err)
-		} else {
-			fmt.Println(string(b))
-		}
-
 		if topicMsg.Block.SubType == "send" {
-			fmt.Println(topicMsg.Amount)
+			_, exists := controller.ProccessedHashes[hash]
+			if exists {
+				return nil
+			}
+
+			controller.ProccessedHashes[hash] = true
+
+			if slices.Equal(topicMsg.Block.Link[:], controller.Sender[:]) {
+				controller.Proccessor <- block_proccessor.QueueEntry{
+					Type: block_proccessor.RECEIVE_BLOCK,
+					Block: block_proccessor.Block{
+						Amount: topicMsg.Amount,
+						Link:   hash,
+					},
+				}
+			} else if slices.Equal(topicMsg.Block.Account[:], controller.WithdrawalAccount[:]) {
+				controller.Proccessor <- block_proccessor.QueueEntry{
+					Type: block_proccessor.SEND_BLOCK,
+					Block: block_proccessor.Block{
+						Amount: controller.RefundAmount,
+						Link:   topicMsg.Block.Link,
+					},
+				}
+			}
 		}
 	}
 
 	return nil
 }
 
-func Start(proccessor_channel chan<- block_proccessor.QueueEntry, wsUrl string) {
-	SubscribtionMessage := WebSocketSubscribtion{
+func (controller WebSocketController) Start() {
+	controller.ProccessedHashes = make(map[[32]byte]bool)
+
+	SubscriptionMessage := WebSocketSubscription{
 		Action: "subscribe",
 		Topic:  "confirmation",
 		Ack:    true,
+		Options: SubscriptionOptions{
+			Accounts: []util.Address{controller.Sender, controller.WithdrawalAccount},
+		},
 	}
 
-	SubscribtionMessageJSON, err := json.Marshal(SubscribtionMessage)
+	SubscriptionMessageJSON, err := json.Marshal(SubscriptionMessage)
 
 	if err != nil {
 		panic(err)
@@ -98,7 +132,7 @@ func Start(proccessor_channel chan<- block_proccessor.QueueEntry, wsUrl string) 
 
 ConnectionLoop:
 	for {
-		c, _, err := websocket.DefaultDialer.Dial(wsUrl, nil)
+		c, _, err := websocket.DefaultDialer.Dial(controller.Url, nil)
 		if err != nil {
 			fmt.Println("dial error:", err, "reconnecting...")
 			time.Sleep(5 * time.Second)
@@ -107,23 +141,23 @@ ConnectionLoop:
 
 		fmt.Println("Connected")
 
-		c.WriteMessage(websocket.TextMessage, SubscribtionMessageJSON)
+		c.WriteMessage(websocket.TextMessage, SubscriptionMessageJSON)
 
 	MessageLoop:
 		for {
-			mt, rawMessage, err := c.ReadMessage()
+			eventType, rawMessage, err := c.ReadMessage()
 			if err != nil {
 				fmt.Println("read:", err)
 				break MessageLoop
 			}
 
-			switch mt {
+			switch eventType {
 			case websocket.CloseMessage:
 				break MessageLoop
 
 			case websocket.TextMessage:
 				{
-					err = ProcessMessage(rawMessage)
+					err = controller.ProcessMessage(rawMessage)
 
 					if err != nil {
 						break MessageLoop

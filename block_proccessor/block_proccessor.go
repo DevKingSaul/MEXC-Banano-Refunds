@@ -1,11 +1,13 @@
 package block_proccessor
 
 import (
-	"encoding/json"
 	"fmt"
+	"github.com/devkingsaul/mexc-banano-refunds/ed25519"
 	"github.com/devkingsaul/mexc-banano-refunds/rpc"
 	"github.com/devkingsaul/mexc-banano-refunds/uint128"
 	"github.com/devkingsaul/mexc-banano-refunds/util"
+	"strings"
+	"encoding/hex"
 )
 
 const (
@@ -28,7 +30,7 @@ type BlockController struct {
 	Queue    []QueueEntry    `json:"queue"`
 }
 
-func Run(channel <-chan QueueEntry, frontier util.StateBlock, api rpc.APIController) {
+func Run(channel <-chan QueueEntry, frontier util.StateBlock, api rpc.APIController, privateKey []byte) {
 	/*queue := make([]QueueEntry, 0, 5)
 
 	controller := BlockController{
@@ -39,12 +41,53 @@ func Run(channel <-chan QueueEntry, frontier util.StateBlock, api rpc.APIControl
 	for {
 		msg := <-channel
 
-		b, err := json.MarshalIndent(msg, "", "   ")
+		var newBalance uint128.Uint128
+		var subtype string
 
-		if err != nil {
-			panic(err)
+		frontierHash := frontier.Hash()
+
+		if msg.Type == SEND_BLOCK {
+			newBalance = frontier.Balance.Sub(msg.Block.Amount)
+			subtype = "send"
+
+			recepientAddr, err := util.EncodeAddress(msg.Block.Link, "ban_")
+
+			if err != nil {
+				fmt.Printf("Failed to parse Address (%s)", err)
+				continue
+			}
+
+			fmt.Printf("Sending\n  Frontier: %s\n  Recepient: %s\n  Amount: %s\n", strings.ToUpper(hex.EncodeToString(frontierHash[:])), recepientAddr, msg.Block.Amount.String())
+		} else if msg.Type == RECEIVE_BLOCK {
+			newBalance = frontier.Balance.Add(msg.Block.Amount)
+			subtype = "receive"
+
+			fmt.Printf("Receiving\n  Frontier: %s\n  Link: %s\n  Amount: %s\n", strings.ToUpper(hex.EncodeToString(frontierHash[:])), strings.ToUpper(hex.EncodeToString(msg.Block.Link[:])), msg.Block.Amount.String())
+		} else {
+			fmt.Printf("Received invaild Block Type (%d)\n", msg.Type)
+			continue
 		}
 
-		fmt.Println(string(b))
+		newBlock := util.StateBlock{
+			Account:        frontier.Account,
+			Previous:       frontierHash,
+			Representative: frontier.Representative,
+			Balance:        newBalance,
+			Link:           msg.Block.Link,
+		}
+
+		blockHash := newBlock.Hash()
+
+		signature := ed25519.Sign(privateKey, blockHash[:])
+
+		copy(newBlock.Signature[:], signature)
+
+		_, err := api.ProcessBlock(newBlock, subtype)
+
+		if err != nil {
+			fmt.Printf("Received error when processing block (%s)\n", err)
+		} else {
+			frontier = newBlock
+		}
 	}
 }
